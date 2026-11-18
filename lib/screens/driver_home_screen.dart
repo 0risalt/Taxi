@@ -277,7 +277,7 @@ class _DriverHomeScreenState extends State<DriverHomeScreen> {
           else
             Switch(
               value: _online,
-              activeColor: AppColors.primary,
+              activeThumbColor: AppColors.primary,
               onChanged: _toggleOnline,
             ),
         ],

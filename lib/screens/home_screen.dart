@@ -37,7 +37,7 @@ class _HomeScreenState extends State<HomeScreen>
     with SingleTickerProviderStateMixin {
   static const double _sheetHeight = 320;
 
-  final BookmarksService _bookmarks = BookmarksService();
+  final BookmarksService _bookmarksService = BookmarksService();
   final YandexApi _api = YandexApi();
   final RideService _rides = RideService();
   final AuthService _auth = AuthService();
@@ -113,10 +113,10 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _loadSavedPlaces() async {
     try {
-      final bookmarks = await _bookmarks.getBookmarks();
-      final history = await _bookmarks.getHistory();
-      final home = await _bookmarks.getPlace('home');
-      final work = await _bookmarks.getPlace('work');
+      final bookmarks = await _bookmarksService.getBookmarks();
+      final history = await _bookmarksService.getHistory();
+      final home = await _bookmarksService.getPlace('home');
+      final work = await _bookmarksService.getPlace('work');
       if (!mounted) return;
       setState(() {
         _bookmarks = bookmarks;
@@ -439,7 +439,7 @@ class _HomeScreenState extends State<HomeScreen>
     // Сохраняем в историю
     if (_destinationAddress != null) {
       try {
-        await _bookmarks.savePlace(
+        await _bookmarksService.savePlace(
           address: _destinationAddress!,
           lat: end.latitude,
           lon: end.longitude,
@@ -478,7 +478,7 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
     try {
-      await _bookmarks.savePlace(
+      await _bookmarksService.savePlace(
         address: address,
         lat: dest.latitude,
         lon: dest.longitude,
@@ -494,7 +494,7 @@ class _HomeScreenState extends State<HomeScreen>
 
   Future<void> _deleteItem(Map<String, dynamic> item) async {
     try {
-      await _bookmarks.deleteItem(item['id'] as int);
+      await _bookmarksService.deleteItem(item['id'] as int);
       await _loadSavedPlaces();
     } catch (e) {
       debugPrint('Ошибка удаления: $e');
