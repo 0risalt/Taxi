@@ -1,0 +1,137 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Новый запуск на той же ветке отменяет предыдущий
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # нужно только для публикации релиза по тегу v*
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Проект может лежать как в корне репозитория, так и во вложенной папке.
+      # Ищем pubspec.yaml (берём самый "верхний") и запоминаем его папку.
+      - name: Find Flutter project
+        run: |
+          PUBSPEC=$(find . -maxdepth 4 -name pubspec.yaml \
+            -not -path '*/.*' -not -path '*/build/*' \
+            | awk '{ print length($0), $0 }' | sort -n | head -n1 | cut -d' ' -f2-)
+          if [ -z "$PUBSPEC" ]; then
+            echo "::error::pubspec.yaml не найден в репозитории. Содержимое корня:"
+            ls -la
+            exit 1
+          fi
+          APP_DIR=$(dirname "$PUBSPEC")
+          echo "Flutter-проект: $APP_DIR"
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+
+      # JDK 21: плагин yandex_maps_mapkit собран под Java 21 (class file 65),
+      # с JDK 17 сборка падает с "class file has wrong version 65.0, should be 61.0".
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+        # Чтобы зафиксировать версию, как у вас локально:
+        #   flutter-version: '3.xx.x'   (узнать: flutter --version)
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Install dependencies
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter pub get
+
+      # Диагностика: показывает, что лежит в android/, и проверяет манифест.
+      # Без <meta-data android:name="flutterEmbedding" android:value="2"/> в
+      # android/app/src/main/AndroidManifest.xml Flutter падает с ошибкой
+      # "deleted Android v1 embedding".
+      - name: Check Android project
+        working-directory: ${{ env.APP_DIR }}
+        run: |
+          echo "--- файлы в android/ ---"
+          find android -type f \
+            -not -path '*/build/*' -not -path '*/.gradle/*' -not -name '*.png' \
+            | sort
+          # Flutter считает проект "не на Gradle" (и ругается на v1 embedding),
+          # если нет корневого android/build.gradle(.kts). Проверяем набор файлов.
+          MISSING=0
+          for f in android/build.gradle android/settings.gradle android/app/build.gradle; do
+            if [ ! -f "$f" ] && [ ! -f "$f.kts" ]; then
+              echo "::error::Нет файла $f(.kts) — в репозиторий не попала часть папки android/"
+              MISSING=1
+            fi
+          done
+          for f in android/gradle.properties android/gradle/wrapper/gradle-wrapper.properties; do
+            [ -f "$f" ] || { echo "::error::Нет файла $f"; MISSING=1; }
+          done
+          [ "$MISSING" = 0 ] || exit 1
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if [ ! -f "$MANIFEST" ]; then
+            echo "::error::Нет файла $MANIFEST. Положите туда главный манифест (из папки android/app/src/main/ архива)."
+            exit 1
+          fi
+          echo "--- $MANIFEST ---"
+          cat "$MANIFEST"
+          if ! grep -q 'flutterEmbedding' "$MANIFEST"; then
+            echo "::error::В $MANIFEST нет meta-data flutterEmbedding=2 (возможно, там лежит debug/profile-манифест)."
+            exit 1
+          fi
+
+      - name: Analyze
+        # Замечания анализатора не блокируют сборку APK;
+        # настоящие ошибки компиляции упадут на шаге Build.
+        working-directory: ${{ env.APP_DIR }}
+        run: flutter analyze --no-fatal-infos
+        continue-on-error: true
+
+      - name: Build release APK
+        working-directory: ${{ env.APP_DIR }}
+        # Две попытки: Gradle иногда не может скачать зависимости
+        # (сбой plugins.gradle.org / Maven), повтор обычно помогает.
+        run: |
+          for attempt in 1 2; do
+            echo "Сборка APK, попытка $attempt из 2"
+            if flutter build apk --release; then
+              exit 0
+            fi
+            echo "::warning::Сборка не удалась (попытка $attempt)"
+            sleep 20
+          done
+          exit 1
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: navigator-app-release-apk
+          path: ${{ env.APP_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GitHub Release (по тегу v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.APP_DIR }}/build/app/outputs/flutter-apk/app-release.apk
+          generate_release_notes: true
